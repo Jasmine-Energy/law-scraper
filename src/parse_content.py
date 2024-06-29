@@ -1,6 +1,7 @@
 import os
 import json
 from urllib3 import request
+from bs4 import BeautifulSoup
 from pinecone import Pinecone, ServerlessSpec
 from openai import OpenAI
 
@@ -32,14 +33,24 @@ def fetch_content(url: str) -> str:
     return json.loads(response.data)
 
 
-def format_content(content: dict) -> str:
-    name = content["name"]
-    summary = content["summary"]
-    category = content["typeObj"]["categoryObj"]["name"]
-    type = content["typeObj"]["name"]
-    state = content["stateObj"]["abbreviation"]
-    source = content["websiteUrl"]
-    return f"Name: `{name}` Summary: `{summary}` Category: `{category} - {type}` State: `{state}` Source: {source}"
+def extract_metadata(content: dict) -> dict:
+    html_summary = BeautifulSoup(content["summary"], "html.parser") if content["summary"] else None
+    summary = html_summary.get_text() if html_summary else "N/A"
+    summary_links = [link.get("href") for link in html_summary.find_all("a") if link.get("href")] if html_summary else []
+    metadata = {
+        "name": content["name"],
+        "category": content["typeObj"]["categoryObj"]["name"],
+        "type": content["typeObj"]["name"],
+        "sector": content["categoryObj"]["name"],
+        "source": content["websiteUrl"] or "N/A",
+        "summary": summary.replace("\n", " ").replace("\t", " ").strip(),
+        "summary_links": summary_links,
+    }
+    if metadata["sector"] == "State" or metadata["sector"] == "Local":
+        metadata["state"] = content["stateObj"]["abbreviation"]
+    if metadata["sector"] == "Local":
+        metadata["county"] = content["name"].split("-")[0].strip()
+    return metadata
 
 
 def generate_embedding(text: str) -> list:
@@ -50,7 +61,21 @@ def generate_embedding(text: str) -> list:
     )
     return embedding
 
-start_index = 0
+
+def fetch_batch(start: int, length: int = 100):
+    url = f"https://programs.dsireusa.org/api/v1/programs?draw=1&columns%5B0%5D%5Bdata%5D=name&columns%5B0%5D%5Bname%5D&columns%5B0%5D%5Bsearchable%5D=true&columns%5B0%5D%5Borderable%5D=true&columns%5B0%5D%5Bsearch%5D%5Bvalue%5D&columns%5B0%5D%5Bsearch%5D%5Bregex%5D=false&columns%5B1%5D%5Bdata%5D=stateObj.abbreviation&columns%5B1%5D%5Bname%5D&columns%5B1%5D%5Bsearchable%5D=true&columns%5B1%5D%5Borderable%5D=true&columns%5B1%5D%5Bsearch%5D%5Bvalue%5D&columns%5B1%5D%5Bsearch%5D%5Bregex%5D=false&columns%5B2%5D%5Bdata%5D=categoryObj.name&columns%5B2%5D%5Bname%5D&columns%5B2%5D%5Bsearchable%5D=true&columns%5B2%5D%5Borderable%5D=true&columns%5B2%5D%5Bsearch%5D%5Bvalue%5D&columns%5B2%5D%5Bsearch%5D%5Bregex%5D=false&columns%5B3%5D%5Bdata%5D=typeObj.name&columns%5B3%5D%5Bname%5D&columns%5B3%5D%5Bsearchable%5D=true&columns%5B3%5D%5Borderable%5D=true&columns%5B3%5D%5Bsearch%5D%5Bvalue%5D&columns%5B3%5D%5Bsearch%5D%5Bregex%5D=false&columns%5B4%5D%5Bdata%5D=published&columns%5B4%5D%5Bname%5D&columns%5B4%5D%5Bsearchable%5D=true&columns%5B4%5D%5Borderable%5D=true&columns%5B4%5D%5Bsearch%5D%5Bvalue%5D&columns%5B4%5D%5Bsearch%5D%5Bregex%5D=false&columns%5B5%5D%5Bdata%5D=createdTs&columns%5B5%5D%5Bname%5D&columns%5B5%5D%5Bsearchable%5D=true&columns%5B5%5D%5Borderable%5D=true&columns%5B5%5D%5Bsearch%5D%5Bvalue%5D&columns%5B5%5D%5Bsearch%5D%5Bregex%5D=false&columns%5B6%5D%5Bdata%5D=updatedTs&columns%5B6%5D%5Bname%5D&columns%5B6%5D%5Bsearchable%5D=true&columns%5B6%5D%5Borderable%5D=true&columns%5B6%5D%5Bsearch%5D%5Bvalue%5D&columns%5B6%5D%5Bsearch%5D%5Bregex%5D=false&order%5B0%5D%5Bcolumn%5D=6&order%5B0%5D%5Bdir%5D=desc&start={start}&length={length}&search%5Bvalue%5D&search%5Bregex%5D=false"
+    content = fetch_content(url)
+    for entry in content["data"]:
+        parsed = extract_metadata(entry)
+        embedding = generate_embedding(json.dumps(entry))
+        yield (
+            str(entry["id"]),
+            embedding,
+            parsed,
+        )
+
+
+start_index = 1_100
 end_index = 2_543
 page_count = 100
 
@@ -59,34 +84,11 @@ while start_index < end_index:
     if start_index + page_count > end_index:
         page_count = end_index - start_index
 
-    content = fetch_content(
-        f"https://programs.dsireusa.org/api/v1/programs?draw=1&columns%5B0%5D%5Bdata%5D=name&columns%5B0%5D%5Bname%5D&columns%5B0%5D%5Bsearchable%5D=true&columns%5B0%5D%5Borderable%5D=true&columns%5B0%5D%5Bsearch%5D%5Bvalue%5D&columns%5B0%5D%5Bsearch%5D%5Bregex%5D=false&columns%5B1%5D%5Bdata%5D=stateObj.abbreviation&columns%5B1%5D%5Bname%5D&columns%5B1%5D%5Bsearchable%5D=true&columns%5B1%5D%5Borderable%5D=true&columns%5B1%5D%5Bsearch%5D%5Bvalue%5D&columns%5B1%5D%5Bsearch%5D%5Bregex%5D=false&columns%5B2%5D%5Bdata%5D=categoryObj.name&columns%5B2%5D%5Bname%5D&columns%5B2%5D%5Bsearchable%5D=true&columns%5B2%5D%5Borderable%5D=true&columns%5B2%5D%5Bsearch%5D%5Bvalue%5D&columns%5B2%5D%5Bsearch%5D%5Bregex%5D=false&columns%5B3%5D%5Bdata%5D=typeObj.name&columns%5B3%5D%5Bname%5D&columns%5B3%5D%5Bsearchable%5D=true&columns%5B3%5D%5Borderable%5D=true&columns%5B3%5D%5Bsearch%5D%5Bvalue%5D&columns%5B3%5D%5Bsearch%5D%5Bregex%5D=false&columns%5B4%5D%5Bdata%5D=published&columns%5B4%5D%5Bname%5D&columns%5B4%5D%5Bsearchable%5D=true&columns%5B4%5D%5Borderable%5D=true&columns%5B4%5D%5Bsearch%5D%5Bvalue%5D&columns%5B4%5D%5Bsearch%5D%5Bregex%5D=false&columns%5B5%5D%5Bdata%5D=createdTs&columns%5B5%5D%5Bname%5D&columns%5B5%5D%5Bsearchable%5D=true&columns%5B5%5D%5Borderable%5D=true&columns%5B5%5D%5Bsearch%5D%5Bvalue%5D&columns%5B5%5D%5Bsearch%5D%5Bregex%5D=false&columns%5B6%5D%5Bdata%5D=updatedTs&columns%5B6%5D%5Bname%5D&columns%5B6%5D%5Bsearchable%5D=true&columns%5B6%5D%5Borderable%5D=true&columns%5B6%5D%5Bsearch%5D%5Bvalue%5D&columns%5B6%5D%5Bsearch%5D%5Bregex%5D=false&order%5B0%5D%5Bcolumn%5D=6&order%5B0%5D%5Bdir%5D=desc&start={start_index}&length={page_count}&search%5Bvalue%5D&search%5Bregex%5D=false"
-    )
+    content = fetch_batch(start_index, page_count)
 
     batches = []
-    for entry in content["data"]:
-        formatted = format_content(entry)
-        name = entry["name"] or "N/A"
-        summary = entry["summary"] or "N/A"
-        category = entry["typeObj"]["categoryObj"]["name"] or "N/A"
-        type = entry["typeObj"]["name"] or "N/A"
-        state = entry["stateObj"]["abbreviation"] or "N/A"
-        source = entry["websiteUrl"] or "N/A"
-        embedding = generate_embedding(formatted)
-        batches.append(
-            (
-                str(entry["id"]),
-                embedding,
-                {
-                    "state": state,
-                    "name": name,
-                    "category": category,
-                    "type": type,
-                    "source": source,
-                    "summary": summary,
-                },
-            )
-        )
+    for entry in content:
+        batches.append(entry)
 
     index.upsert(
         vectors=batches,
