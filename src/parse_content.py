@@ -41,7 +41,7 @@ def extract_metadata(content: dict) -> dict:
         "name": content["name"],
         "category": content["typeObj"]["categoryObj"]["name"],
         "type": content["typeObj"]["name"],
-        "sector": content["categoryObj"]["name"],
+        "sector": content["sectorObj"]["name"],
         "source": content["websiteUrl"] or "N/A",
         "summary": summary.replace("\n", " ").replace("\t", " ").strip(),
         "summary_links": summary_links,
@@ -55,6 +55,7 @@ def extract_metadata(content: dict) -> dict:
 
 def generate_embedding(text: str) -> list:
     embedding = (
+        # TODO: Batch requests
         openai_client.embeddings.create(input=[text], model=EMBED_MODEL)
         .data[0]
         .embedding
@@ -75,7 +76,7 @@ def fetch_batch(start: int, length: int = 100):
         )
 
 
-start_index = 1_100
+start_index = 0
 end_index = 2_543
 page_count = 100
 
